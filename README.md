@@ -2,6 +2,7 @@ A general purpose dynamic hash based accumulator designed for use with PADLOCK,
 based off of [UTreeXO](https://dci.mit.edu/utreexo).
 
 TODO:
+-   Resolve compiler warnings
 -   Pruning of nodes which are set to zero
 -   Aggregated proofs
 -   Verification without storing proofs
