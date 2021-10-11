@@ -4,6 +4,9 @@ use std::rc::Rc;
 #[macro_use]
 extern crate log;
 
+#[macro_use]
+extern crate serde;
+
 use anyhow::{anyhow, Result};
 
 use thiserror::Error;
@@ -13,7 +16,7 @@ use kvdb::KeyValueDB;
 pub const HASH_SIZE: usize = 25;
 
 mod merkle_tree;
-use merkle_tree::{MerkleTree, Proof, ProofTree};
+use merkle_tree::{MerkleTree, MerkleTreeForSerialization, Proof, ProofTree};
 
 mod path;
 
@@ -33,8 +36,40 @@ impl<Db: KeyValueDB> Accumulator<Db> {
         }
     }
 
+    /// Consumes self, and returns the database
+    pub fn db(self) -> Rc<Db> {
+        self.db
+    }
+
+    pub fn save_to_db(&self) -> Result<()> {
+        let accumulator_info = AccumulatorInfo::new(&self);
+
+        let mut transaction = self.db.transaction();
+        transaction.put(0, b"accumulator_info", &bincode::serialize(&accumulator_info)?);
+        self.db.write(transaction)?;
+
+        Ok(())
+    }
+
+    pub fn from_db(db: Rc<Db>) -> Result<Self> {
+        let accumulator_info: AccumulatorInfo = match db.get(0, b"accumulator_info")? {
+            Some(accumulator_info) => bincode::deserialize(&accumulator_info)?,
+            None => {return Err(anyhow!("accumulator_info doesn't exist in database"))}
+        };
+
+        let trees = MerkleTreeForSerialization::vec_to_merkle_tree(accumulator_info.trees, db.clone());
+
+        Ok(Self{
+            trees,
+            num_elements: accumulator_info.num_elements,
+            db,
+        })
+    }
+
     /// Adds a hash to the accumulator. If track_proof is true, a proof of
     /// membership for this hash will be stored.
+    ///
+    /// TODO add support for tracking only certain proofs as opposed to all proofs
     ///
     /// Returns the index of the hash added.
     pub fn add(&mut self, hash: Hash, track_proof: bool) -> Result<usize> {
@@ -147,25 +182,19 @@ impl<Db: KeyValueDB> Accumulator<Db> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct Root {
-    hash: Hash,
-    height: usize,
+/// Used for saving the accumulator to a database
+#[derive(Serialize, Deserialize)]
+pub struct AccumulatorInfo {
+    trees: Vec<MerkleTreeForSerialization>,
+    num_elements: usize,
 }
 
-impl Root {
-    fn new(hash: Hash) -> Self {
-        Self { hash, height: 1 }
-    }
-
-    fn merge_with(&mut self, root: Self) {
-        if self.height != root.height {
-            panic!("Cannot merge roots of different heights");
+impl AccumulatorInfo {
+    fn new<Db: KeyValueDB>(accumulator: &Accumulator<Db>) -> Self {
+        Self {
+            trees: MerkleTreeForSerialization::from_merkle_trees(&accumulator.trees),
+            num_elements: accumulator.num_elements,
         }
-
-        let to_hash = [self.hash, root.hash].concat();
-        self.hash = hash(&to_hash);
-        self.height += 1;
     }
 }
 
@@ -181,30 +210,4 @@ pub enum AccumulatorError {
     IndexDoesntExist(usize),
     #[error(transparent)]
     Other(#[from] Box<dyn std::error::Error>),
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::Root;
-
-    pub fn init() {
-        let _ = env_logger::builder().is_test(true).try_init();
-    }
-
-    #[test]
-    fn can_create_root() {
-        init();
-
-        let _root = Root::new(rand::random());
-    }
-
-    #[test]
-    fn can_merge_roots() {
-        init();
-
-        let mut root1 = Root::new(rand::random());
-        let root2 = Root::new(rand::random());
-
-        root1.merge_with(root2);
-    }
 }

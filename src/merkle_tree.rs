@@ -32,6 +32,16 @@ impl<Db: KeyValueDB> MerkleTree<Db> {
         })
     }
 
+    pub fn from_parts(db: Rc<Db>, root_node_hash: Hash, node_height: usize, height: usize) -> Self {
+        Self {
+            db,
+            root_node_hash,
+            node_height,
+            height
+        }
+    }
+    
+
     pub fn num_leaves(&self) -> usize {
         2usize.pow(self.height as u32 - 1)
     }
@@ -243,12 +253,62 @@ impl<Db: KeyValueDB> MerkleTree<Db> {
     }
 }
 
+/// A merkle tree in it's intermediate form before being serialized or deserialized.
+#[derive(Serialize, Deserialize)]
+pub struct MerkleTreeForSerialization {
+    root_node_hash: Hash,
+    node_height: usize,
+    height: usize,
+}
+
+impl MerkleTreeForSerialization {
+    fn from_merkle_tree<Db: KeyValueDB>(merkle_tree: &MerkleTree<Db>) -> Self {
+        Self {
+            root_node_hash: merkle_tree.root_node_hash,
+            node_height: merkle_tree.node_height,
+            height: merkle_tree.height,
+        }
+    }
+
+    pub fn from_merkle_trees<Db: KeyValueDB>(merkle_trees: &[MerkleTree<Db>]) -> Vec<Self> {
+        let mut merkle_tree_for_serialization_vec = Vec::new();
+
+        for merkle_tree in merkle_trees.iter() {
+            let merkle_tree_for_serialization 
+                = MerkleTreeForSerialization::from_merkle_tree(&merkle_tree);
+
+            merkle_tree_for_serialization_vec.push(merkle_tree_for_serialization);
+        }
+
+        merkle_tree_for_serialization_vec
+    }
+
+    fn to_merkle_tree<Db: KeyValueDB>(&self, db: Rc<Db>) -> MerkleTree<Db> {
+        MerkleTree {
+            db,
+            root_node_hash: self.root_node_hash,
+            node_height: self.node_height,
+            height: self.height,
+        }
+    }
+
+    pub fn vec_to_merkle_tree<Db: KeyValueDB>(vec: Vec<Self>, db: Rc<Db>) -> Vec<MerkleTree<Db>> {
+        let mut merkle_tree_vec = Vec::new();
+
+        for merkle_tree_for_serialization in vec.iter() {
+            merkle_tree_vec.push(merkle_tree_for_serialization.to_merkle_tree(db.clone()));
+        }
+
+        merkle_tree_vec
+    }
+}
+
 /// The merkle tree is split into many smaller merkle trees. Each sub tree is
 /// called a node. These smaller merkle trees don't actually store a full merkle
 /// tree, but rather it stores just the leaves. In order to retrieve a proof, it
 /// concatenates a proof from every node in the branch. Proofs are retrieved
 /// from nodes by recreating the subtree based off of the leaves, getting the
-/// proof, than discarding the subtree (except the leaves of course)
+/// proof, then discarding the subtree (except the leaves of course)
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct Node {
     is_leaf: bool,
@@ -439,7 +499,10 @@ mod tests {
     use std::rc::Rc;
 
     use crate::merkle_tree::MerkleTree;
-    use crate::tests::init;
+
+    pub fn init() {
+        let _ = env_logger::builder().is_test(true).try_init();
+    }
 
     #[test]
     fn can_create_merkle_tree() {

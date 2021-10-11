@@ -104,6 +104,18 @@ fn can_remove_hashes() {
     }
 }
 
+#[test]
+fn accumulator_works_after_recovering_from_db() {
+    let accumulator = test_accumulator();
+    accumulator.save_to_db().unwrap();
+
+    let db = accumulator.db();
+    let accumulator = Accumulator::from_db(db).unwrap();
+
+    accumulator.get_proof(ACCUMULATOR_SIZE - 1).unwrap();
+    accumulator.get_leaf(2).unwrap();
+}
+
 fn test_accumulator() -> Accumulator<InMemory> {
     let db = kvdb_memorydb::create(1);
 
