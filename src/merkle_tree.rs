@@ -37,10 +37,9 @@ impl<Db: KeyValueDB> MerkleTree<Db> {
             db,
             root_node_hash,
             node_height,
-            height
+            height,
         }
     }
-    
 
     pub fn num_leaves(&self) -> usize {
         2usize.pow(self.height as u32 - 1)
@@ -93,18 +92,16 @@ impl<Db: KeyValueDB> MerkleTree<Db> {
         let mut proofs = Vec::new();
 
         for index in path {
-            let current_node_bytes = self.db.get(0, &next_node_hash)?.ok_or(
-                anyhow!("Node {:?} doesn't exist in database", next_node_hash),
-            )?;
+            let current_node_bytes = self.db.get(0, &next_node_hash)?.ok_or(anyhow!(
+                "Node {:?} doesn't exist in database",
+                next_node_hash
+            ))?;
 
             current_node = bincode::deserialize(&current_node_bytes)?;
 
             let proof = current_node.get_proof(index as usize)?;
 
-            assert!(
-                proof.root(*current_node.get_leaf(index as usize)?)
-                    == current_node.root()
-            );
+            assert!(proof.root(*current_node.get_leaf(index as usize)?) == current_node.root());
 
             proofs.push(proof);
             next_node_hash = *current_node.get_leaf(index as usize)?;
@@ -140,9 +137,10 @@ impl<Db: KeyValueDB> MerkleTree<Db> {
         let mut next_node_hash = self.root();
 
         for index in path {
-            let current_node_bytes = self.db.get(0, &next_node_hash)?.ok_or(
-                anyhow!("Node {:?} doesn't exist in database", next_node_hash),
-            )?;
+            let current_node_bytes = self.db.get(0, &next_node_hash)?.ok_or(anyhow!(
+                "Node {:?} doesn't exist in database",
+                next_node_hash
+            ))?;
 
             current_node = bincode::deserialize(&current_node_bytes)?;
 
@@ -157,9 +155,16 @@ impl<Db: KeyValueDB> MerkleTree<Db> {
     }
 
     pub fn remove(&mut self, proof: &Proof) -> Result<()> {
-        trace!("MerkleTree::remove called with proof.leaf_index {}", proof.leaf_index);
+        trace!(
+            "MerkleTree::remove called with proof.leaf_index {}",
+            proof.leaf_index
+        );
 
-        trace!("Removing index {} from tree with root {:?}", proof.leaf_index, self.root());
+        trace!(
+            "Removing index {} from tree with root {:?}",
+            proof.leaf_index,
+            self.root()
+        );
 
         // add all relevant nodes to array
         let path = Path::new(self.node_height, proof.leaf_index);
@@ -170,9 +175,10 @@ impl<Db: KeyValueDB> MerkleTree<Db> {
         let mut nodes_and_parent_indexes = Vec::new();
 
         for index in path {
-            let current_node_bytes = self.db.get(0, &next_node_hash)?.ok_or(
-                anyhow!("Node {:?} doesn't exist in database", next_node_hash),
-            )?;
+            let current_node_bytes = self.db.get(0, &next_node_hash)?.ok_or(anyhow!(
+                "Node {:?} doesn't exist in database",
+                next_node_hash
+            ))?;
 
             current_node = bincode::deserialize(&current_node_bytes)?;
             nodes_and_parent_indexes.push(current_node.clone());
@@ -209,11 +215,8 @@ impl<Db: KeyValueDB> MerkleTree<Db> {
         assert!(last_node_root != last_node_pre_root);
 
         // set leaf in every node to new hashes
-        for node_and_parent_index in
-            nodes_and_parent_indexes.iter_mut().rev().skip(1)
-        {
-            let last_node_index = node_and_parent_index
-                .get_index_from_hash(last_node_pre_root)?;
+        for node_and_parent_index in nodes_and_parent_indexes.iter_mut().rev().skip(1) {
+            let last_node_index = node_and_parent_index.get_index_from_hash(last_node_pre_root)?;
             last_node_pre_root = node_and_parent_index.root();
             node_and_parent_index.set_leaf(last_node_index, last_node_root);
             last_node_root = node_and_parent_index.root();
@@ -253,7 +256,8 @@ impl<Db: KeyValueDB> MerkleTree<Db> {
     }
 }
 
-/// A merkle tree in it's intermediate form before being serialized or deserialized.
+/// A merkle tree in it's intermediate form before being serialized or
+/// deserialized.
 #[derive(Serialize, Deserialize)]
 pub struct MerkleTreeForSerialization {
     root_node_hash: Hash,
@@ -274,8 +278,8 @@ impl MerkleTreeForSerialization {
         let mut merkle_tree_for_serialization_vec = Vec::new();
 
         for merkle_tree in merkle_trees.iter() {
-            let merkle_tree_for_serialization 
-                = MerkleTreeForSerialization::from_merkle_tree(&merkle_tree);
+            let merkle_tree_for_serialization =
+                MerkleTreeForSerialization::from_merkle_tree(&merkle_tree);
 
             merkle_tree_for_serialization_vec.push(merkle_tree_for_serialization);
         }
@@ -329,9 +333,10 @@ impl Node {
     }
 
     fn get_leaf(&self, index: usize) -> Result<&Hash> {
-        let leaf = self.leaves.iter().nth(index).ok_or_else(|| {
-            anyhow!("Index {} doesn't exist in node {:?}", index, self.root())
-        })?;
+        let leaf =
+            self.leaves.iter().nth(index).ok_or_else(|| {
+                anyhow!("Index {} doesn't exist in node {:?}", index, self.root())
+            })?;
 
         Ok(leaf)
     }
@@ -562,7 +567,7 @@ mod tests {
     }
 
     #[test]
-    fn can_remove_leaf()  {
+    fn can_remove_leaf() {
         init();
 
         for i in 0..4 {

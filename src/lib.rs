@@ -45,7 +45,11 @@ impl<Db: KeyValueDB> Accumulator<Db> {
         let accumulator_info = AccumulatorInfo::new(&self);
 
         let mut transaction = self.db.transaction();
-        transaction.put(0, b"accumulator_info", &bincode::serialize(&accumulator_info)?);
+        transaction.put(
+            0,
+            b"accumulator_info",
+            &bincode::serialize(&accumulator_info)?,
+        );
         self.db.write(transaction)?;
 
         Ok(())
@@ -54,12 +58,13 @@ impl<Db: KeyValueDB> Accumulator<Db> {
     pub fn from_db(db: Rc<Db>) -> Result<Self> {
         let accumulator_info: AccumulatorInfo = match db.get(0, b"accumulator_info")? {
             Some(accumulator_info) => bincode::deserialize(&accumulator_info)?,
-            None => {return Err(anyhow!("accumulator_info doesn't exist in database"))}
+            None => return Err(anyhow!("accumulator_info doesn't exist in database")),
         };
 
-        let trees = MerkleTreeForSerialization::vec_to_merkle_tree(accumulator_info.trees, db.clone());
+        let trees =
+            MerkleTreeForSerialization::vec_to_merkle_tree(accumulator_info.trees, db.clone());
 
-        Ok(Self{
+        Ok(Self {
             trees,
             num_elements: accumulator_info.num_elements,
             db,
@@ -69,7 +74,8 @@ impl<Db: KeyValueDB> Accumulator<Db> {
     /// Adds a hash to the accumulator. If track_proof is true, a proof of
     /// membership for this hash will be stored.
     ///
-    /// TODO add support for tracking only certain proofs as opposed to all proofs
+    /// TODO add support for tracking only certain proofs as opposed to all
+    /// proofs
     ///
     /// Returns the index of the hash added.
     pub fn add(&mut self, hash: Hash, track_proof: bool) -> Result<usize> {
@@ -103,8 +109,7 @@ impl<Db: KeyValueDB> Accumulator<Db> {
     }
 
     pub fn remove(&mut self, proof: &Proof, index: usize) -> Result<()> {
-        let tree_index =
-            self.find_tree_that_contains_index(index)?;
+        let tree_index = self.find_tree_that_contains_index(index)?;
 
         trace!("tree {} contains index {}", tree_index, proof.leaf_index);
 

@@ -5,7 +5,7 @@ extern crate log;
 
 use kvdb_memorydb::InMemory;
 
-const ACCUMULATOR_SIZE: usize = 57; 
+const ACCUMULATOR_SIZE: usize = 57;
 
 fn init() {
     let _ = env_logger::builder().is_test(true).try_init();
