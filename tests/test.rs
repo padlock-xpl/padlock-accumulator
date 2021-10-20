@@ -5,6 +5,8 @@ extern crate log;
 
 use kvdb_memorydb::InMemory;
 
+use std::rc::Rc;
+
 const ACCUMULATOR_SIZE: usize = 57;
 
 fn init() {
@@ -15,9 +17,9 @@ fn init() {
 fn can_create_accumulator() {
     init();
 
-    let mut db = kvdb_memorydb::create(1);
+    let mut db = Rc::new(kvdb_memorydb::create(1));
 
-    let _accumulator: Accumulator<InMemory> = Accumulator::new(db);
+    let _accumulator: Accumulator<InMemory> = Accumulator::new(db.clone());
 }
 
 #[test]
@@ -33,8 +35,8 @@ fn can_add_hashes() {
 #[test]
 fn get_leaf_returns_correct_leaf() {
     let mut leafs = Vec::new();
-    let db = kvdb_memorydb::create(1);
-    let mut accumulator = Accumulator::new(db);
+    let db = Rc::new(kvdb_memorydb::create(1));
+    let mut accumulator = Accumulator::new(db.clone());
 
     for _ in 0..ACCUMULATOR_SIZE {
         let hash = rand::random();
@@ -117,9 +119,9 @@ fn accumulator_works_after_recovering_from_db() {
 }
 
 fn test_accumulator() -> Accumulator<InMemory> {
-    let db = kvdb_memorydb::create(1);
+    let db = Rc::new(kvdb_memorydb::create(1));
 
-    let mut accumulator = Accumulator::new(db);
+    let mut accumulator = Accumulator::new(db.clone());
 
     for _ in 0..ACCUMULATOR_SIZE {
         accumulator.add(rand::random(), true).unwrap();

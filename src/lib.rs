@@ -28,11 +28,11 @@ pub struct Accumulator<Db> {
 }
 
 impl<Db: KeyValueDB> Accumulator<Db> {
-    pub fn new(backing_db: Db) -> Self {
+    pub fn new(backing_db: Rc<Db>) -> Self {
         Self {
             trees: Vec::new(),
             num_elements: 0,
-            db: Rc::new(backing_db),
+            db: backing_db,
         }
     }
 
