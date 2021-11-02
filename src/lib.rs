@@ -13,7 +13,7 @@ use thiserror::Error;
 
 use kvdb::KeyValueDB;
 
-pub const HASH_SIZE: usize = 25;
+pub const HASH_SIZE: usize = 32;
 
 mod merkle_tree;
 use merkle_tree::{MerkleTree, MerkleTreeForSerialization, Proof, ProofTree};
@@ -206,7 +206,7 @@ impl AccumulatorInfo {
 pub type Hash = [u8; HASH_SIZE];
 
 fn hash(data: &[u8]) -> Hash {
-    blake3::hash(data).as_bytes()[0..25].try_into().unwrap()
+    blake3::hash(data).as_bytes()[0..HASH_SIZE].try_into().unwrap()
 }
 
 #[derive(Debug, Error)]
