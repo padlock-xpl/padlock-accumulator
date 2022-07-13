@@ -1,8 +1,10 @@
 use std::rc::Rc;
+use std::collections::HashMap;
 
 use crate::{hash, path::Path, Hash};
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Result, Context};
+
 use kvdb::KeyValueDB;
 use serde::{Deserialize, Serialize};
 
@@ -456,12 +458,164 @@ impl Node {
 }
 
 /// A sparse merkle tree that contains multiple proofs of memberships.
-pub struct ProofTree;
+pub struct ProofTree {
+    hash_map: HashMap<ProofTreeKey, Hash>,
+    /// Height will be None if no proofs have been added to the tree
+    height: Option<usize>,
+}
 
 impl ProofTree {
-    pub fn root(&self) -> Hash {
-        todo!()
+    pub fn new() -> Self {
+        Self {
+            hash_map: HashMap::new(),
+            height: None
+        }
     }
+
+    pub fn root(&self) -> Option<&Hash> {
+        let key = ProofTreeKey { index: 0, height: 0 };
+        self.hash_map.get(&key)
+    }
+
+    fn add_hash(&mut self, key: ProofTreeKey, hash: Hash) {
+        trace!("adding hash {:?} with key {:?}", hash, key);
+        self.hash_map.insert(key, hash);
+    }
+
+    fn get_hash(&self, key: &ProofTreeKey) -> Option<&Hash> {
+        self.hash_map.get(key)
+    }
+
+    fn add_proof(&mut self, proof: Proof, proof_leaf_hash: Hash) -> Result<()> {
+        trace!("add_proof called");
+
+        if let Some(self_root) = self.root() {
+            if proof.root(proof_leaf_hash) != *self_root {
+                return Err(anyhow!("Proof must have the same root hash as the proof tree"))
+            }
+        }
+
+        let mut height = proof.height_of_tree();
+        if let Some(current_height) = self.height {
+            if current_height != height {
+                return Err(anyhow!("New proof must be the same height as the current proof tree"));
+            }
+        } else {
+            self.height = Some(height)
+        }
+
+        let layers = proof.layers(&proof_leaf_hash);
+
+        for layer in layers {
+            let left_key = ProofTreeKey { index: layer.left_index, height };
+            self.add_hash(left_key, layer.left);
+
+            let right_key = ProofTreeKey { index: layer.left_index + 1, height };
+            self.add_hash(right_key, layer.right);
+
+            height -= 1;
+        }
+        
+        let root_key = ProofTreeKey { index: 0, height: 0 };
+        self.add_hash(root_key, proof.root(proof_leaf_hash));
+
+        Ok(())
+    }
+
+    /// Checks whether the proof tree is valid (all node children hash to their parent's value) and
+    /// that the proof tree root is equal to the supplied root
+    fn is_valid(&self, root_of_tree_to_check_against: &Hash) -> Result<bool> {
+        let root_key = ProofTreeKey { index: 0, height: 0 };
+        let root_hash = self.get_hash(&root_key).context("Proof tree doesn't have a root node")?;
+        
+        if root_hash != root_of_tree_to_check_against {
+            return Ok(false)
+        }
+
+        let is_valid = self.check_node(&root_key)?;
+
+        Ok(is_valid)
+    }
+
+    /// Checks whether a node's children hashes to their the nodes value. Also checks if both
+    /// children are valid. Therefore, calling this on just the root node will check every existing
+    /// node in the proof tree.
+    fn check_node(&self, hash_key: &ProofTreeKey) -> Result<bool> {
+        let tree_height = self.height.context("Tree doesn't have a set height yet (you need to add proofs first)")?;
+        
+        trace!("Checking node with key {:?}", hash_key);
+        
+        // Checking whether this hash is a leaf hash
+        if hash_key.height >= tree_height {
+            return Ok(true)
+        }
+
+        let left_child_key = ProofTreeKey {
+            index: hash_key.index * 2,
+            height: hash_key.height + 1,
+        };
+
+        let left_hash = match self.get_hash(&left_child_key) {
+            Some(left_hash) => left_hash,
+            None => {
+                return Ok(true)
+            }
+        };
+        
+        if !self.check_node(&left_child_key)? {
+            return Ok(false)
+        }
+
+        let right_child_key = ProofTreeKey {
+            index: left_child_key.index + 1,
+            height: left_child_key.height,
+        };
+
+        let right_hash = match self.get_hash(&right_child_key) {
+            Some(left_hash) => left_hash,
+            None => {
+                return Ok(true)
+            }
+        };
+
+        if !self.check_node(&right_child_key)? {
+            return Ok(false)
+        }
+
+        let data_to_hash = [*left_hash, *right_hash].concat();
+        let left_and_right_hashed = hash(&data_to_hash);
+        let node_hash = self.get_hash(hash_key).context(format!("node with key {:?} doesn't exist", hash_key))?;
+
+        if left_and_right_hashed != *node_hash {
+            return Ok(false)
+        }
+
+        trace!("node with key {:?} is valid", hash_key);
+
+        Ok(true)
+    }
+
+    fn contains_leaf(&self, leaf: Hash, leaf_index: usize) -> bool {
+        let height = match self.height {
+            Some(height) => height,
+            None => { return false }
+        };
+
+        let key = ProofTreeKey { index: leaf_index, height };
+        if let Some(leaf_in_tree) = self.get_hash(&key) {
+            if leaf == *leaf_in_tree {
+                return true
+            }
+        }
+
+        false
+    }
+}
+
+#[derive(Hash, PartialEq, Eq, Debug)]
+struct ProofTreeKey {
+    index: usize,
+    height: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -492,18 +646,67 @@ impl Proof {
         prev_hash
     }
 
+    pub fn height_of_tree(&self) -> usize {
+        self.hashes.len()
+    }
+
     /// Adds a proof onto the end of the proof. Used to combine proofs between
     /// different subtrees.
     pub fn concat(&mut self, proof: &mut Self) {
         self.hashes.append(&mut proof.hashes);
     }
+
+    /// Returns a vector of layers, each layer being the two hashes that are hashed to form the
+    /// next layer
+    fn layers(&self, leaf_hash: &Hash) -> Vec<ProofLayer> {
+        let mut prev_hash = *leaf_hash;
+        let mut current_index = self.leaf_index;
+
+        let mut layers: Vec<ProofLayer> = Vec::new();
+
+        for current_hash in self.hashes.iter() {
+            let to_hash = match current_index % 2 == 0 {
+                true => {
+                    let layer = ProofLayer {
+                        left: prev_hash,
+                        left_index: current_index,
+                        right: *current_hash,
+                    };
+
+                    layers.push(layer);
+                    [prev_hash, *current_hash].concat()
+                },
+                false => {
+                    let layer = ProofLayer {
+                        left: *current_hash,
+                        left_index: current_index - 1,
+                        right: prev_hash,
+                    };
+
+                    layers.push(layer);
+                    [*current_hash, prev_hash].concat()
+                }
+            };
+
+            prev_hash = hash(&to_hash);
+            current_index /= 2;
+        }
+
+        layers
+    }
+}
+
+struct ProofLayer {
+    left: Hash,
+    left_index: usize,
+    right: Hash,
 }
 
 #[cfg(test)]
 mod tests {
     use std::rc::Rc;
 
-    use crate::merkle_tree::MerkleTree;
+    use crate::merkle_tree::*;
 
     pub fn init() {
         let _ = env_logger::builder().is_test(true).try_init();
@@ -564,6 +767,48 @@ mod tests {
 
             assert!(proof.root(leaf_hash) == tree.root())
         }
+    }
+
+    #[test]
+    fn can_create_valid_aggregated_proof_unit() {
+        init();
+
+        let tree = create_large_tree();
+        let proof_one = tree.get_proof(0).unwrap();
+        let leaf_one = tree.get_leaf(0).unwrap();
+        let proof_two = tree.get_proof(1).unwrap();
+        let leaf_two = tree.get_leaf(1).unwrap();
+
+        let mut aggregated_proof = ProofTree::new();
+
+        aggregated_proof.add_proof(proof_one, leaf_one).unwrap();
+        aggregated_proof.add_proof(proof_two, leaf_two).unwrap();
+
+        assert!(aggregated_proof.is_valid(&tree.root()).unwrap());
+        assert!(aggregated_proof.contains_leaf(leaf_one, 0));
+        assert!(aggregated_proof.contains_leaf(leaf_two, 1));
+    }
+
+    #[test]
+    fn invalid_aggregated_proof_is_invalid_unit() {
+        init();
+
+        let tree = create_large_tree();
+        let proof_one = tree.get_proof(0).unwrap();
+        let leaf_one = tree.get_leaf(0).unwrap();
+
+        let mut proof_two = tree.get_proof(1).unwrap();
+        let leaf_two = tree.get_leaf(1).unwrap();
+
+        let mut aggregated_proof = ProofTree::new();
+
+        aggregated_proof.add_proof(proof_one, leaf_one).unwrap();
+        aggregated_proof.add_proof(proof_two, leaf_two).unwrap();
+
+        let key_to_mess_up = ProofTreeKey { index: 0, height: 1 };
+        aggregated_proof.add_hash(key_to_mess_up, [0; 32]);
+
+        assert!(aggregated_proof.is_valid(&tree.root()).unwrap() == false)
     }
 
     #[test]

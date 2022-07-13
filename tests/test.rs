@@ -56,11 +56,9 @@ fn can_create_valid_proofs() {
     init();
 
     let accumulator = test_accumulator();
-
     for i in 0..ACCUMULATOR_SIZE {
         let proof = accumulator.get_proof(i).unwrap();
         let leaf = accumulator.get_leaf(i).unwrap();
-        println!("loop: {}", i);
         assert!(accumulator.contains_root(proof.root(leaf)));
     }
 }

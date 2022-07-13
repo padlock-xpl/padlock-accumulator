@@ -203,6 +203,10 @@ impl AccumulatorInfo {
     }
 }
 
+pub struct PrunedAccumulator {
+    tree_roots: Vec<Hash>
+}
+
 pub type Hash = [u8; HASH_SIZE];
 
 fn hash(data: &[u8]) -> Hash {
