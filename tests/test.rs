@@ -4,6 +4,7 @@ use padlock_accumulator::{Accumulator, Hash};
 extern crate log;
 
 use kvdb_memorydb::InMemory;
+use rand::Rng;
 
 use std::rc::Rc;
 
@@ -83,7 +84,17 @@ fn can_create_valid_aggregated_proof() {
 
     let accumulator = test_accumulator();
 
-    todo!()
+    let mut proofs_to_get = Vec::new();
+
+    for i in 0..15 {
+        let index = rand::thread_rng().gen_range(0..(ACCUMULATOR_SIZE - 1));
+
+        proofs_to_get.push(index);
+    }
+
+    let aggregated_proof = accumulator.get_proofs(proofs_to_get).unwrap();
+
+    assert!(accumulator.is_aggregated_proof_valid(&aggregated_proof).unwrap());
 }
 
 #[test]

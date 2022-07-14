@@ -8,6 +8,9 @@ use anyhow::{anyhow, Result, Context};
 use kvdb::KeyValueDB;
 use serde::{Deserialize, Serialize};
 
+#[cfg(test)]
+use rand::Rng;
+
 /// A merkle tree that stores data on disk.
 #[derive(Debug)]
 pub struct MerkleTree<Db> {
@@ -458,6 +461,7 @@ impl Node {
 }
 
 /// A sparse merkle tree that contains multiple proofs of memberships.
+#[derive(Debug, Clone)]
 pub struct ProofTree {
     hash_map: HashMap<ProofTreeKey, Hash>,
     /// Height will be None if no proofs have been added to the tree
@@ -486,7 +490,7 @@ impl ProofTree {
         self.hash_map.get(key)
     }
 
-    fn add_proof(&mut self, proof: Proof, proof_leaf_hash: Hash) -> Result<()> {
+    pub fn add_proof(&mut self, proof: Proof, proof_leaf_hash: Hash) -> Result<()> {
         trace!("add_proof called");
 
         if let Some(self_root) = self.root() {
@@ -524,7 +528,7 @@ impl ProofTree {
 
     /// Checks whether the proof tree is valid (all node children hash to their parent's value) and
     /// that the proof tree root is equal to the supplied root
-    fn is_valid(&self, root_of_tree_to_check_against: &Hash) -> Result<bool> {
+    pub fn is_valid(&self, root_of_tree_to_check_against: &Hash) -> Result<bool> {
         let root_key = ProofTreeKey { index: 0, height: 0 };
         let root_hash = self.get_hash(&root_key).context("Proof tree doesn't have a root node")?;
         
@@ -610,9 +614,21 @@ impl ProofTree {
 
         false
     }
+
+    /// Will mess up the proof for testing purposes. Should not be called unless using for test
+    ///
+    /// Chooses four random hashes to mess up
+    #[cfg(test)]
+    pub fn mess_up(&mut self) {
+        for _ in 0..4 {
+            let index: usize = rand::thread_rng().gen_range(0..self.hash_map.len());
+            let random: [u8; 32] = rand::random();
+            self.hash_map.iter_mut().nth(index).unwrap().1.copy_from_slice(&random);
+        }
+    }
 }
 
-#[derive(Hash, PartialEq, Eq, Debug)]
+#[derive(Hash, PartialEq, Eq, Debug, Clone)]
 struct ProofTreeKey {
     index: usize,
     height: usize,
@@ -805,8 +821,7 @@ mod tests {
         aggregated_proof.add_proof(proof_one, leaf_one).unwrap();
         aggregated_proof.add_proof(proof_two, leaf_two).unwrap();
 
-        let key_to_mess_up = ProofTreeKey { index: 0, height: 1 };
-        aggregated_proof.add_hash(key_to_mess_up, [0; 32]);
+        aggregated_proof.mess_up();
 
         assert!(aggregated_proof.is_valid(&tree.root()).unwrap() == false)
     }

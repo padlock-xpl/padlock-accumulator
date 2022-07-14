@@ -1,5 +1,6 @@
 use std::convert::TryInto;
 use std::rc::Rc;
+use std::collections::HashMap;
 
 #[macro_use]
 extern crate log;
@@ -7,7 +8,7 @@ extern crate log;
 #[macro_use]
 extern crate serde;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Result, Context};
 
 use thiserror::Error;
 
@@ -130,8 +131,48 @@ impl<Db: KeyValueDB> Accumulator<Db> {
         Ok(proof)
     }
 
-    pub fn get_proofs(&self, indexes: Vec<usize>) -> Result<ProofTree> {
-        todo!()
+    pub fn get_proofs(&self, mut indices: Vec<usize>) -> Result<AggregatedProof> {
+        // Each element takes the form, tree_index, leaf_index
+        let mut indices_with_tree_index: Vec<(usize, usize)> = Vec::new();
+
+        for index in indices.iter() {
+            let tree_index = self.find_tree_that_contains_index(*index)?;
+
+            indices_with_tree_index.push((tree_index, *index));
+        }
+
+        let mut proof_trees: HashMap<usize, ProofTree> = HashMap::new();
+
+        for index in indices {
+            let proof = self.get_proof(index).context(format!("Could not get proof for index {}", index))?;
+            let leaf = self.get_leaf(index).context(format!("Could not get leaf for index {}", index))?;
+            let proof_tree_index = self.find_tree_that_contains_index(index).context(format!("Could not find tree that contains the index {}", index))?;
+
+            let mut proof_tree: ProofTree = match proof_trees.get(&proof_tree_index) {
+                Some(proof_tree) => proof_tree.to_owned(),
+                None => ProofTree::new(),
+            };
+
+            proof_tree.add_proof(proof, leaf).context("Could not add proof to proof tree")?;
+
+            proof_trees.insert(proof_tree_index, proof_tree);
+        }
+
+        Ok(AggregatedProof {
+            proof_trees
+        })
+    }
+
+    pub fn is_aggregated_proof_valid(&self, proof: &AggregatedProof) -> Result<bool> {
+        for (tree_index, proof_tree) in proof.proof_trees.iter() {
+            let tree = self.trees.iter().nth(*tree_index).context(format!("tree with index {} doesn't exist", tree_index))?;
+
+            if !proof_tree.is_valid(&tree.root())? {
+                return Ok(false)
+            }
+        }
+
+        Ok(true)
     }
 
     pub fn get_leaf(&self, index: usize) -> Result<Hash> {
@@ -203,6 +244,20 @@ impl AccumulatorInfo {
     }
 }
 
+pub struct AggregatedProof {
+    proof_trees: HashMap<usize, ProofTree>,
+}
+
+#[cfg(test)]
+impl AggregatedProof {
+    /// Will mess up the proof for testing purposes
+    pub fn mess_up(&mut self) {
+        for tree in self.proof_trees.values_mut() {
+            tree.mess_up();
+        }
+    }
+}
+
 pub struct PrunedAccumulator {
     tree_roots: Vec<Hash>
 }
@@ -219,4 +274,52 @@ pub enum AccumulatorError {
     IndexDoesntExist(usize),
     #[error(transparent)]
     Other(#[from] Box<dyn std::error::Error>),
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::*;
+
+    use kvdb_memorydb::InMemory;
+    use rand::Rng;
+    
+    use std::rc::Rc;
+
+    const ACCUMULATOR_SIZE: usize = 57;
+
+    fn init() {
+        let _ = env_logger::builder().is_test(true).try_init();
+    }
+    
+    #[test]
+    fn invalid_aggregated_proof_is_invalid() {
+        init();
+    
+        let accumulator = test_accumulator();
+    
+        let mut proofs_to_get = Vec::new();
+    
+        for i in 0..15 {
+            let index = rand::thread_rng().gen_range(0..(ACCUMULATOR_SIZE - 1));
+    
+            proofs_to_get.push(index);
+        }
+    
+        let mut aggregated_proof = accumulator.get_proofs(proofs_to_get).unwrap();
+        aggregated_proof.mess_up();
+    
+        assert!(accumulator.is_aggregated_proof_valid(&aggregated_proof).unwrap() == false)
+    }
+
+    fn test_accumulator() -> Accumulator<InMemory> {
+        let db = Rc::new(kvdb_memorydb::create(1));
+    
+        let mut accumulator = Accumulator::new(db.clone());
+    
+        for _ in 0..ACCUMULATOR_SIZE {
+            accumulator.add(rand::random(), true).unwrap();
+        }
+    
+        accumulator
+    }
 }
