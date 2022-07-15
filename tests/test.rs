@@ -4,7 +4,7 @@ use padlock_accumulator::{Accumulator, Hash};
 extern crate log;
 
 use kvdb_memorydb::InMemory;
-use rand::Rng;
+use rand::{Rng, SeedableRng};
 
 use std::rc::Rc;
 
@@ -103,7 +103,7 @@ fn can_remove_hashes() {
 
     let mut accumulator = test_accumulator();
 
-    for i in 0..ACCUMULATOR_SIZE {
+    for i in 0..2 {
         info!("loop: {}", i);
         let proof = accumulator.get_proof(i).unwrap();
         let leaf = accumulator.get_leaf(i).unwrap();
@@ -111,7 +111,9 @@ fn can_remove_hashes() {
         accumulator.remove(&proof, i).unwrap();
 
         assert!(accumulator.contains_root(proof.root(leaf)) == false);
-        assert!(accumulator.contains_root(proof.root(Hash::default())))
+
+        info!("proof root: {:?}", proof.root(Hash::default()));
+        assert!(accumulator.contains_root(proof.root(Hash::default())));
     }
 }
 
@@ -130,10 +132,14 @@ fn accumulator_works_after_recovering_from_db() {
 fn test_accumulator() -> Accumulator<InMemory> {
     let db = Rc::new(kvdb_memorydb::create(1));
 
+    // Uses a seeded random number generator to make sure the tree is random, but the same every
+    // time, to make debugging easier
+    let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(10);
+
     let mut accumulator = Accumulator::new(db.clone());
 
     for _ in 0..ACCUMULATOR_SIZE {
-        accumulator.add(rand::random(), true).unwrap();
+        accumulator.add(rng.gen(), true).unwrap();
     }
 
     accumulator

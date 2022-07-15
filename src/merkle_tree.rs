@@ -31,7 +31,7 @@ impl<Db: KeyValueDB> MerkleTree<Db> {
 
         Ok(Self {
             db,
-            root_node_hash: node.root(),
+            root_node_hash: node.root()?,
             node_height: 1,
             height: 1,
         })
@@ -58,7 +58,7 @@ impl<Db: KeyValueDB> MerkleTree<Db> {
         let mut transaction = self.db.transaction();
 
         let mut root_node = self.root_node()?;
-        transaction.delete(0, &root_node.root());
+        transaction.delete(0, &root_node.root()?);
 
         let new_root_node = root_node.merge_with(tree.root_node()?)?;
 
@@ -68,15 +68,15 @@ impl<Db: KeyValueDB> MerkleTree<Db> {
             let new_root_node_bytes = bincode::serialize(&new_root_node)?;
             let root_node_bytes = bincode::serialize(&root_node)?;
 
-            transaction.put(0, &new_root_node.root(), &new_root_node_bytes);
-            transaction.put(0, &root_node.root(), &root_node_bytes);
+            transaction.put(0, &new_root_node.root()?, &new_root_node_bytes);
+            transaction.put(0, &root_node.root()?, &root_node_bytes);
 
-            self.root_node_hash = new_root_node.root();
+            self.root_node_hash = new_root_node.root()?;
         } else {
             let root_node_bytes = bincode::serialize(&root_node)?;
-            transaction.put(0, &root_node.root(), &root_node_bytes);
+            transaction.put(0, &root_node.root()?, &root_node_bytes);
 
-            self.root_node_hash = root_node.root();
+            self.root_node_hash = root_node.root()?;
         }
 
         self.db.write(transaction)?;
@@ -106,10 +106,10 @@ impl<Db: KeyValueDB> MerkleTree<Db> {
 
             let proof = current_node.get_proof(index as usize)?;
 
-            assert!(proof.root(*current_node.get_leaf(index as usize)?) == current_node.root());
+            // assert!(proof.root(*current_node.get_leaf(index as usize)?) == current_node.root());
 
             proofs.push(proof);
-            next_node_hash = *current_node.get_leaf(index as usize)?;
+            next_node_hash = current_node.get_leaf(index as usize)?;
 
             if current_node.is_leaf {
                 break;
@@ -149,7 +149,7 @@ impl<Db: KeyValueDB> MerkleTree<Db> {
 
             current_node = bincode::deserialize(&current_node_bytes)?;
 
-            next_node_hash = *current_node.get_leaf(index as usize)?;
+            next_node_hash = current_node.get_leaf(index as usize)?;
 
             if current_node.is_leaf {
                 break;
@@ -188,7 +188,7 @@ impl<Db: KeyValueDB> MerkleTree<Db> {
             current_node = bincode::deserialize(&current_node_bytes)?;
             nodes_and_parent_indexes.push(current_node.clone());
 
-            next_node_hash = *current_node.get_leaf(index as usize)?;
+            next_node_hash = current_node.get_leaf(index as usize)?;
 
             if current_node.is_leaf {
                 break;
@@ -199,7 +199,7 @@ impl<Db: KeyValueDB> MerkleTree<Db> {
         let mut transaction = self.db.transaction();
 
         for node in &nodes_and_parent_indexes {
-            transaction.delete(0, &node.root());
+            transaction.delete(0, &node.root()?);
         }
 
         // now there is a list of relevant nodes ordered from highest to lowest
@@ -209,27 +209,27 @@ impl<Db: KeyValueDB> MerkleTree<Db> {
             proof.leaf_index
         ))?;
 
-        let mut last_node_pre_root = leaf.root();
+        let mut last_node_pre_root = leaf.root()?;
 
-        println!("{:?}", leaf.get_leaf(proof.leaf_index % 16));
-        leaf.set_leaf(proof.leaf_index % 16, Hash::default());
-        println!("{:?}", leaf.get_leaf(proof.leaf_index % 16));
+        leaf.prune_leaf(proof.leaf_index % 16);
 
-        let mut last_node_root = leaf.root();
+        let mut last_node_root = leaf.root()?;
 
-        assert!(last_node_root != last_node_pre_root);
+        if last_node_root == last_node_pre_root {
+            return Err(anyhow!("Removing from merkle tree is not functioning properly; please make issue on this crate's github"));
+        }
 
         // set leaf in every node to new hashes
         for node_and_parent_index in nodes_and_parent_indexes.iter_mut().rev().skip(1) {
             let last_node_index = node_and_parent_index.get_index_from_hash(last_node_pre_root)?;
-            last_node_pre_root = node_and_parent_index.root();
+            last_node_pre_root = node_and_parent_index.root()?;
             node_and_parent_index.set_leaf(last_node_index, last_node_root);
-            last_node_root = node_and_parent_index.root();
+            last_node_root = node_and_parent_index.root()?;
         }
 
         // add all nodes back to database
         for node in &nodes_and_parent_indexes {
-            transaction.put(0, &node.root(), &bincode::serialize(&node)?);
+            transaction.put(0, &node.root()?, &bincode::serialize(&node)?);
         }
 
         self.db.write(transaction)?;
@@ -240,7 +240,7 @@ impl<Db: KeyValueDB> MerkleTree<Db> {
                 "No nodes were found in index {}'s path",
                 proof.leaf_index
             ))?
-            .root();
+            .root()?;
 
         trace!("New tree root: {:?}", self.root());
 
@@ -321,65 +321,87 @@ impl MerkleTreeForSerialization {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct Node {
     is_leaf: bool,
-    leaves: Vec<Hash>,
+    leaves: HashMap<usize, Hash>,
+    num_leaves: usize,
 }
 
 impl Node {
     fn new(leaf_hash: Hash, is_leaf: bool) -> Self {
+        let mut leaves = HashMap::new();
+        leaves.insert(0, leaf_hash);
+
         Self {
             is_leaf,
-            leaves: vec![leaf_hash],
+            leaves,
+            num_leaves: 1,
         }
     }
 
-    fn root(&self) -> Hash {
-        let tree = self.build_tree();
-        tree.last().unwrap().clone()
+    fn root(&self) -> Result<Hash> {
+        let tree = self.build_tree()?;
+        Ok(tree.last().unwrap().clone())
     }
 
-    fn get_leaf(&self, index: usize) -> Result<&Hash> {
-        let leaf =
-            self.leaves.iter().nth(index).ok_or_else(|| {
-                anyhow!("Index {} doesn't exist in node {:?}", index, self.root())
-            })?;
+    fn get_leaf(&self, index: usize) -> Result<Hash> {
+        if index >= self.num_leaves {
+            return Err(anyhow!("Index cannot be greater than the number of leaves"))
+        }
+
+        let leaf = match self.leaves.get(&index) {
+            Some(leaf) => *leaf,
+            None => Hash::default(),
+        };
 
         Ok(leaf)
     }
 
     fn set_leaf(&mut self, index: usize, leaf: Hash) {
-        self.leaves[index] = leaf
+
+        match self.leaves.insert(index, leaf) {
+            Some(_) => {}
+            None => { self.num_leaves += 1 }
+        }
+    }
+
+    // Effectively sets leaf to zeros. Leaves that are zeros aren't actually stored in order to
+    // save space.
+    fn prune_leaf(&mut self, index: usize) {
+        self.leaves.remove(&index);
     }
 
     fn get_index_from_hash(&self, hash: Hash) -> Result<usize> {
-        self.leaves
-            .iter()
-            .position(|leaf| *leaf == hash)
-            .ok_or(anyhow!(
-                "Couldn't find index from hash {:?} in node {:?}",
-                hash,
-                self.root()
-            ))
-    }
-
-    fn is_empty(&self) -> bool {
-        for leaf in &self.leaves {
-            if leaf != &Hash::default() {
-                return false;
+        for (index, leaf) in self.leaves.iter() {
+            if *leaf == hash {
+                return Ok(*index)
             }
         }
 
-        true
+        Err(anyhow!("Could not get index from hash {:?} in node {:?}", hash, self.root()))
+    }
+
+    fn is_empty(&self) -> bool {
+        self.leaves.is_empty()
+    }
+
+    fn leaves_as_slice(&self) -> Result<Vec<Hash>> {
+        let mut vec_of_leaves = Vec::new();
+
+        for index in 0..self.num_leaves {
+            vec_of_leaves.push(self.get_leaf(index)?)
+        }
+
+        Ok(vec_of_leaves)
     }
 
     /// Returns a merkle tree from self.leaves, represented as
     /// [0, 1, 2, 3, h(0, 1), h(2, 3), h(h(0, 1) h(2, 3))]
     /// The last value in the vector being the root.
-    fn build_tree(&self) -> Vec<Hash> {
+    fn build_tree(&self) -> Result<Vec<Hash>> {
         if self.leaves.len() == 1 {
-            return vec![self.leaves[0]];
+            return Ok(vec![self.get_leaf(0)?]);
         }
 
-        let mut tree = self.leaves.clone();
+        let mut tree: Vec<Hash> = self.leaves_as_slice()?.into();
 
         let mut i = 0;
 
@@ -399,7 +421,17 @@ impl Node {
             i += 2;
         }
 
-        tree
+        Ok(tree)
+    }
+
+    fn append_leaf(&mut self, leaf: Hash) {
+        self.set_leaf(self.num_leaves, leaf)
+    }
+
+    fn append_leaves(&mut self, leaves: &[Hash]) {
+        for leaf in leaves.iter() {
+            self.append_leaf(*leaf);
+        }
     }
 
     pub fn height(&self) -> usize {
@@ -409,34 +441,36 @@ impl Node {
     /// Merges two nodes together, and returns another node if the merged node
     /// has more than 16 leaves
     fn merge_with(&mut self, mut node: Node) -> Result<Option<Node>> {
-        if self.leaves.len() != node.leaves.len() {
+        if self.num_leaves != node.num_leaves {
             return Err(anyhow!("Cannot merge two nodes of different heights"));
         }
 
-        if self.leaves.len() == 16 {
-            let new_leaves = vec![self.root(), node.root()];
+        if self.num_leaves == 16 {
+            //let new_leaves = vec![self.root(), node.root()];
+            let mut new_leaves = HashMap::new();
+            new_leaves.insert(0, self.root()?);
+            new_leaves.insert(1, node.root()?);
 
             return Ok(Some(Self {
                 is_leaf: false,
                 leaves: new_leaves,
+                num_leaves: 2
             }));
         }
 
-        self.leaves.append(&mut node.leaves);
+        self.append_leaves(&mut node.leaves_as_slice()?);
 
         Ok(None)
     }
 
     fn get_proof(&self, index: usize) -> Result<Proof> {
-        let tree = self.build_tree();
-
-        trace!("current tree: {:#?}", tree);
+        let tree = self.build_tree()?;
 
         let mut proof = Vec::new();
 
         let mut layer_start = 0;
         let mut current_index = index;
-        let mut current_layer_len = self.leaves.len();
+        let mut current_layer_len = self.num_leaves;
 
         while current_layer_len > 1 {
             let sibling_index = match current_index % 2 == 0 {
@@ -463,7 +497,7 @@ impl Node {
 /// A sparse merkle tree that contains multiple proofs of memberships.
 #[derive(Debug, Clone)]
 pub struct ProofTree {
-    hash_map: HashMap<ProofTreeKey, Hash>,
+    hash_map: HashMap<TreeKey, Hash>,
     /// Height will be None if no proofs have been added to the tree
     height: Option<usize>,
 }
@@ -477,16 +511,16 @@ impl ProofTree {
     }
 
     pub fn root(&self) -> Option<&Hash> {
-        let key = ProofTreeKey { index: 0, height: 0 };
+        let key = TreeKey { index: 0, height: 0 };
         self.hash_map.get(&key)
     }
 
-    fn add_hash(&mut self, key: ProofTreeKey, hash: Hash) {
+    fn add_hash(&mut self, key: TreeKey, hash: Hash) {
         trace!("adding hash {:?} with key {:?}", hash, key);
         self.hash_map.insert(key, hash);
     }
 
-    fn get_hash(&self, key: &ProofTreeKey) -> Option<&Hash> {
+    fn get_hash(&self, key: &TreeKey) -> Option<&Hash> {
         self.hash_map.get(key)
     }
 
@@ -511,16 +545,16 @@ impl ProofTree {
         let layers = proof.layers(&proof_leaf_hash);
 
         for layer in layers {
-            let left_key = ProofTreeKey { index: layer.left_index, height };
+            let left_key = TreeKey { index: layer.left_index, height };
             self.add_hash(left_key, layer.left);
 
-            let right_key = ProofTreeKey { index: layer.left_index + 1, height };
+            let right_key = TreeKey { index: layer.left_index + 1, height };
             self.add_hash(right_key, layer.right);
 
             height -= 1;
         }
         
-        let root_key = ProofTreeKey { index: 0, height: 0 };
+        let root_key = TreeKey { index: 0, height: 0 };
         self.add_hash(root_key, proof.root(proof_leaf_hash));
 
         Ok(())
@@ -529,7 +563,7 @@ impl ProofTree {
     /// Checks whether the proof tree is valid (all node children hash to their parent's value) and
     /// that the proof tree root is equal to the supplied root
     pub fn is_valid(&self, root_of_tree_to_check_against: &Hash) -> Result<bool> {
-        let root_key = ProofTreeKey { index: 0, height: 0 };
+        let root_key = TreeKey { index: 0, height: 0 };
         let root_hash = self.get_hash(&root_key).context("Proof tree doesn't have a root node")?;
         
         if root_hash != root_of_tree_to_check_against {
@@ -544,7 +578,7 @@ impl ProofTree {
     /// Checks whether a node's children hashes to their the nodes value. Also checks if both
     /// children are valid. Therefore, calling this on just the root node will check every existing
     /// node in the proof tree.
-    fn check_node(&self, hash_key: &ProofTreeKey) -> Result<bool> {
+    fn check_node(&self, hash_key: &TreeKey) -> Result<bool> {
         let tree_height = self.height.context("Tree doesn't have a set height yet (you need to add proofs first)")?;
         
         trace!("Checking node with key {:?}", hash_key);
@@ -554,7 +588,7 @@ impl ProofTree {
             return Ok(true)
         }
 
-        let left_child_key = ProofTreeKey {
+        let left_child_key = TreeKey {
             index: hash_key.index * 2,
             height: hash_key.height + 1,
         };
@@ -570,7 +604,7 @@ impl ProofTree {
             return Ok(false)
         }
 
-        let right_child_key = ProofTreeKey {
+        let right_child_key = TreeKey {
             index: left_child_key.index + 1,
             height: left_child_key.height,
         };
@@ -605,7 +639,7 @@ impl ProofTree {
             None => { return false }
         };
 
-        let key = ProofTreeKey { index: leaf_index, height };
+        let key = TreeKey { index: leaf_index, height };
         if let Some(leaf_in_tree) = self.get_hash(&key) {
             if leaf == *leaf_in_tree {
                 return true
@@ -629,7 +663,7 @@ impl ProofTree {
 }
 
 #[derive(Hash, PartialEq, Eq, Debug, Clone)]
-struct ProofTreeKey {
+struct TreeKey {
     index: usize,
     height: usize,
 }
